@@ -8,78 +8,68 @@ from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# ===========================
-# CHANGE THIS TO YOUR EMAIL
-# ===========================
+# ==========================================
+# YOUR IITM EMAIL
+# ==========================================
 EMAIL = "23f3003537@ds.study.iitm.ac.in"
 
-# Allowed origins
-ALLOWED_ORIGINS = [
-    "https://app-e43t0y.example.com",
-
-    # IMPORTANT:
-    # Replace this with the origin of the exam page if different.
-    # Example:
-    # "https://exam.example.com"
-]
-
-# ---------------------------
-# CORS Middleware
-# ---------------------------
+# ==========================================
+# CORS
+# ==========================================
+# Replace the second origin with the actual
+# exam page origin if you know it.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=[
+        "https://app-e43t0y.example.com",
+        # "https://<exam-origin>",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------------------
-# Rate Limiter
-# ---------------------------
-
+# ==========================================
+# RATE LIMITER
+# ==========================================
 RATE_LIMIT = 13
-WINDOW = 10  # seconds
+WINDOW = 10
 
-client_requests = defaultdict(deque)
+clients = defaultdict(deque)
 
 
 @app.middleware("http")
-async def middleware(request: Request, call_next):
-    # -------------------------
-    # Request Context
-    # -------------------------
-    request_id = request.headers.get("X-Request-ID")
+async def request_context_and_rate_limit(request: Request, call_next):
 
+    # ---------- Request ID ----------
+    request_id = request.headers.get("X-Request-ID")
     if not request_id:
         request_id = str(uuid.uuid4())
 
     request.state.request_id = request_id
 
-    # -------------------------
-    # Rate Limiting
-    # -------------------------
-    client_id = request.headers.get("X-Client-Id", "anonymous")
+    # Skip rate limiting for OPTIONS (CORS preflight)
+    if request.method != "OPTIONS":
 
-    now = time.time()
-    bucket = client_requests[client_id]
+        client_id = request.headers.get("X-Client-Id", "anonymous")
 
-    while bucket and now - bucket[0] > WINDOW:
-        bucket.popleft()
+        now = time.time()
 
-    if len(bucket) >= RATE_LIMIT:
-        response = JSONResponse(
-            status_code=429,
-            content={
-                "detail": "Rate limit exceeded"
-            }
-        )
-        response.headers["X-Request-ID"] = request_id
-        return response
+        q = clients[client_id]
 
-    bucket.append(now)
+        while q and now - q[0] >= WINDOW:
+            q.popleft()
 
-    # Continue request
+        if len(q) >= RATE_LIMIT:
+            response = JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"},
+            )
+            response.headers["X-Request-ID"] = request_id
+            return response
+
+        q.append(now)
+
     response = await call_next(request)
 
     response.headers["X-Request-ID"] = request_id
@@ -87,13 +77,14 @@ async def middleware(request: Request, call_next):
     return response
 
 
-# ---------------------------
-# Endpoint
-# ---------------------------
+@app.get("/")
+async def home():
+    return {"status": "running"}
+
 
 @app.get("/ping")
 async def ping(request: Request):
     return {
         "email": EMAIL,
-        "request_id": request.state.request_id
+        "request_id": request.state.request_id,
     }
